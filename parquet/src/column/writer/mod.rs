@@ -72,7 +72,13 @@ pub enum ColumnWriter<'a> {
 }
 
 impl<'a> ColumnWriter<'a> {
-    /// Returns the estimated total bytes for this column writer
+    /// Returns the estimated total memory usage
+    #[cfg(feature = "arrow")]
+    pub(crate) fn memory_size(&self) -> usize {
+        downcast_writer!(self, typed, typed.memory_size())
+    }
+
+    /// Returns the estimated total encoded bytes for this column writer
     #[cfg(feature = "arrow")]
     pub(crate) fn get_estimated_total_bytes(&self) -> u64 {
         downcast_writer!(self, typed, typed.get_estimated_total_bytes())
@@ -254,6 +260,12 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         // Used for level information
         encodings.insert(Encoding::RLE);
 
+        // Disable column_index_builder if not collecting page statistics.
+        let mut column_index_builder = ColumnIndexBuilder::new();
+        if statistics_enabled != EnabledStatistics::Page {
+            column_index_builder.to_invalid()
+        }
+
         Self {
             descr,
             props,
@@ -283,7 +295,7 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
                 num_column_nulls: 0,
                 column_distinct_count: None,
             },
-            column_index_builder: ColumnIndexBuilder::new(),
+            column_index_builder,
             offset_index_builder: OffsetIndexBuilder::new(),
             encodings,
             data_page_boundary_ascending: true,
@@ -419,6 +431,15 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         )
     }
 
+    /// Returns the estimated total memory usage.
+    ///
+    /// Unlike [`Self::get_estimated_total_bytes`] this is an estimate
+    /// of the current memory usage and not the final anticipated encoded size.
+    #[cfg(feature = "arrow")]
+    pub(crate) fn memory_size(&self) -> usize {
+        self.column_metrics.total_bytes_written as usize + self.encoder.estimated_memory_size()
+    }
+
     /// Returns total number of bytes written by this column writer so far.
     /// This value is also returned when column writer is closed.
     ///
@@ -428,10 +449,11 @@ impl<'a, E: ColumnValueEncoder> GenericColumnWriter<'a, E> {
         self.column_metrics.total_bytes_written
     }
 
-    /// Returns the estimated total bytes for this column writer
+    /// Returns the estimated total encoded bytes for this column writer.
     ///
     /// Unlike [`Self::get_total_bytes_written`] this includes an estimate
-    /// of any data that has not yet been flushed to a page
+    /// of any data that has not yet been flushed to a page, based on it's
+    /// anticipated encoded size.
     #[cfg(feature = "arrow")]
     pub(crate) fn get_estimated_total_bytes(&self) -> u64 {
         self.column_metrics.total_bytes_written
@@ -3002,6 +3024,30 @@ mod tests {
 
         let incremented = increment(vec![0xFF, 0xFF, 0xFF]);
         assert!(incremented.is_none())
+    }
+
+    #[test]
+    fn test_no_column_index_when_stats_disabled() {
+        // https://github.com/apache/arrow-rs/issues/6010
+        // Test that column index is not created/written for all-nulls column when page
+        // statistics are disabled.
+        let descr = Arc::new(get_test_column_descr::<Int32Type>(1, 0));
+        let props = Arc::new(
+            WriterProperties::builder()
+                .set_statistics_enabled(EnabledStatistics::None)
+                .build(),
+        );
+        let column_writer = get_column_writer(descr, props, get_test_page_writer());
+        let mut writer = get_typed_column_writer::<Int32Type>(column_writer);
+
+        let data = Vec::new();
+        let def_levels = vec![0; 10];
+        writer.write_batch(&data, Some(&def_levels), None).unwrap();
+        writer.flush_data_pages().unwrap();
+
+        let column_close_result = writer.close().unwrap();
+        assert!(column_close_result.offset_index.is_some());
+        assert!(column_close_result.column_index.is_none());
     }
 
     #[test]

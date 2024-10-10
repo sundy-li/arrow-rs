@@ -48,7 +48,7 @@ chrono = { workspace = true }
 chrono-tz = { version = "0.9", optional = true }
 num = { version = "0.4.1", default-features = false, features = ["std"] }
 half = { version = "2.1", default-features = false, features = ["num-traits"] }
-hashbrown = { version = "0.14", default-features = false }
+hashbrown = { version = "0.14.2", default-features = false }
 
 [features]
 ffi = ["arrow-schema/ffi", "arrow-data/ffi"]
@@ -61,4 +61,12 @@ criterion = { version = "0.5", default-features = false }
 
 [[bench]]
 name = "occupancy"
+harness = false
+
+[[bench]]
+name = "gc_view_types"
+harness = false
+
+[[bench]]
+name = "fixed_size_list_array"
 harness = false

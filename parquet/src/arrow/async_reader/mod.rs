@@ -202,6 +202,12 @@ impl ArrowReaderMetadata {
     /// Returns a new [`ArrowReaderMetadata`] for this builder
     ///
     /// See [`ParquetRecordBatchStreamBuilder::new_with_metadata`] for how this can be used
+    ///
+    /// # Notes
+    ///
+    /// If `options` has [`ArrowReaderOptions::with_page_index`] true, but
+    /// `Self::metadata` is missing the page index, this function will attempt
+    /// to load the page index by making an object store request.
     pub async fn load_async<T: AsyncFileReader>(
         input: &mut T,
         options: ArrowReaderOptions,
@@ -1644,7 +1650,7 @@ mod tests {
     #[tokio::test]
     async fn test_parquet_record_batch_stream_schema() {
         fn get_all_field_names(schema: &Schema) -> Vec<&String> {
-            schema.all_fields().iter().map(|f| f.name()).collect()
+            schema.flattened_fields().iter().map(|f| f.name()).collect()
         }
 
         // ParquetRecordBatchReaderBuilder::schema differs from

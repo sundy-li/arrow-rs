@@ -19,20 +19,15 @@
 
 use crate::basic::Type;
 use crate::data_type::private::ParquetValueType;
-use crate::data_type::{ByteArray, FixedLenByteArray, Int96};
+use crate::data_type::{AsBytes, ByteArray, FixedLenByteArray, Int96};
 use crate::errors::ParquetError;
 use crate::format::{BoundaryOrder, ColumnIndex};
 use crate::util::bit_util::from_le_slice;
 use std::fmt::Debug;
 
-/// PageIndex Statistics for one data page, as described in [Column Index].
+/// Typed statistics for one data page
 ///
-/// One significant difference from the row group level
-/// [`Statistics`](crate::format::Statistics) is that page level
-/// statistics may not store actual column values as min and max
-/// (e.g. they may store truncated strings to save space)
-///
-/// [Column Index]: https://github.com/apache/parquet-format/blob/master/PageIndex.md
+/// See [`NativeIndex`] for more details
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageIndex<T> {
     /// The minimum value, It is None when all values are null
@@ -55,13 +50,24 @@ impl<T> PageIndex<T> {
     }
 }
 
+impl<T> PageIndex<T>
+where
+    T: AsBytes,
+{
+    pub fn max_bytes(&self) -> Option<&[u8]> {
+        self.max.as_ref().map(|x| x.as_bytes())
+    }
+
+    pub fn min_bytes(&self) -> Option<&[u8]> {
+        self.min.as_ref().map(|x| x.as_bytes())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(non_camel_case_types)]
-/// Typed statistics for a data page in a column chunk.
+/// Statistics for data pages in a column chunk.
 ///
-/// This structure is part of the "Page Index" and is optionally part of
-/// [ColumnIndex] in the parquet file and can be used to skip decoding pages
-/// while reading the file data.
+/// See [`NativeIndex`] for more information
 pub enum Index {
     /// Sometimes reading page index from parquet file
     /// will only return pageLocations without min_max index,
@@ -104,10 +110,25 @@ impl Index {
     }
 }
 
-/// Stores the [`PageIndex`] for each page of a column
+/// Strongly typed statistics for data pages in a column chunk.
+///
+/// This structure is a natively typed, in memory representation of the
+/// [`ColumnIndex`] structure in a parquet file footer, as described in the
+/// Parquet [PageIndex documentation]. The statistics stored in this structure
+/// can be used by query engines to skip decoding pages while reading parquet
+/// data.
+///
+/// # Differences with Row Group Level Statistics
+///
+/// One significant difference between `NativeIndex` and row group level
+/// [`Statistics`] is that page level statistics may not store actual column
+/// values as min and max (e.g. they may store truncated strings to save space)
+///
+/// [PageIndex documentation]: https://github.com/apache/parquet-format/blob/master/PageIndex.md
+/// [`Statistics`]: crate::file::statistics::Statistics
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NativeIndex<T: ParquetValueType> {
-    /// The indexes, one item per page
+    /// The actual column indexes, one item per page
     pub indexes: Vec<PageIndex<T>>,
     /// If the min/max elements are ordered, and if so in which
     /// direction. See [source] for details.
@@ -154,5 +175,40 @@ impl<T: ParquetValueType> NativeIndex<T> {
             indexes,
             boundary_order: index.boundary_order,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_page_index_min_max_null() {
+        let page_index = PageIndex {
+            min: Some(-123),
+            max: Some(234),
+            null_count: Some(0),
+        };
+
+        assert_eq!(page_index.min().unwrap(), &-123);
+        assert_eq!(page_index.max().unwrap(), &234);
+        assert_eq!(page_index.min_bytes().unwrap(), (-123).as_bytes());
+        assert_eq!(page_index.max_bytes().unwrap(), 234.as_bytes());
+        assert_eq!(page_index.null_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_page_index_min_max_null_none() {
+        let page_index: PageIndex<i32> = PageIndex {
+            min: None,
+            max: None,
+            null_count: None,
+        };
+
+        assert_eq!(page_index.min(), None);
+        assert_eq!(page_index.max(), None);
+        assert_eq!(page_index.min_bytes(), None);
+        assert_eq!(page_index.max_bytes(), None);
+        assert_eq!(page_index.null_count(), None);
     }
 }

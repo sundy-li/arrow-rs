@@ -24,9 +24,9 @@ use arrow_buffer::{
     bit_util, i256, ArrowNativeType, Buffer, IntervalDayTime, IntervalMonthDayNano, MutableBuffer,
 };
 use arrow_schema::{ArrowError, DataType, UnionMode};
+use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
-use std::{mem, usize};
 
 use crate::{equal, validate_binary_view, validate_string_view};
 
@@ -573,6 +573,7 @@ impl ArrayData {
                 DataType::Binary | DataType::Utf8 => {
                     (vec![zeroed((len + 1) * 4), zeroed(0)], vec![], true)
                 }
+                DataType::BinaryView | DataType::Utf8View => (vec![zeroed(len * 16)], vec![], true),
                 DataType::LargeBinary | DataType::LargeUtf8 => {
                     (vec![zeroed((len + 1) * 8), zeroed(0)], vec![], true)
                 }
@@ -1958,7 +1959,7 @@ mod tests {
             .len(20)
             .offset(5)
             .add_buffer(b1)
-            .null_bit_buffer(Some(Buffer::from(vec![
+            .null_bit_buffer(Some(Buffer::from([
                 0b01011111, 0b10110101, 0b01100011, 0b00011110,
             ])))
             .build()
@@ -2163,7 +2164,7 @@ mod tests {
 
     #[test]
     fn test_count_nulls() {
-        let buffer = Buffer::from(vec![0b00010110, 0b10011111]);
+        let buffer = Buffer::from([0b00010110, 0b10011111]);
         let buffer = NullBuffer::new(BooleanBuffer::new(buffer, 0, 16));
         let count = count_nulls(Some(&buffer), 0, 16);
         assert_eq!(count, 7);
@@ -2208,5 +2209,21 @@ mod tests {
 
         data.align_buffers();
         data.validate_full().unwrap();
+    }
+
+    #[test]
+    fn test_null_view_types() {
+        let array_len = 32;
+        let array = ArrayData::new_null(&DataType::BinaryView, array_len);
+        assert_eq!(array.len(), array_len);
+        for i in 0..array.len() {
+            assert!(array.is_null(i));
+        }
+
+        let array = ArrayData::new_null(&DataType::Utf8View, array_len);
+        assert_eq!(array.len(), array_len);
+        for i in 0..array.len() {
+            assert!(array.is_null(i));
+        }
     }
 }

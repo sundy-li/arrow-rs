@@ -40,13 +40,15 @@
 mod decimal;
 mod dictionary;
 mod list;
+mod map;
 mod string;
 use crate::cast::decimal::*;
 use crate::cast::dictionary::*;
 use crate::cast::list::*;
+use crate::cast::map::*;
 use crate::cast::string::*;
 
-use arrow_buffer::{IntervalMonthDayNano, ScalarBuffer};
+use arrow_buffer::IntervalMonthDayNano;
 use arrow_data::ByteView;
 use chrono::{NaiveTime, Offset, TimeZone, Utc};
 use std::cmp::Ordering;
@@ -159,6 +161,12 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
             can_cast_types(from_type, list_to.data_type())},
         (FixedSizeList(list_from,size), _) if *size == 1 => {
             can_cast_types(list_from.data_type(), to_type)},
+        (Map(from_entries,ordered_from), Map(to_entries, ordered_to)) if ordered_from == ordered_to =>
+            match (key_field(from_entries), key_field(to_entries), value_field(from_entries), value_field(to_entries)) {
+                (Some(from_key), Some(to_key), Some(from_value), Some(to_value)) =>
+                    can_cast_types(from_key.data_type(), to_key.data_type()) && can_cast_types(from_value.data_type(), to_value.data_type()),
+                _ => false
+            },
         // cast one decimal type to another decimal type
         (Decimal128(_, _), Decimal128(_, _)) => true,
         (Decimal256(_, _), Decimal256(_, _)) => true,
@@ -202,7 +210,7 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         (LargeBinary, Binary | Utf8 | LargeUtf8 | FixedSizeBinary(_) | BinaryView) => true,
         (FixedSizeBinary(_), Binary | LargeBinary) => true,
         (
-            Utf8 | LargeUtf8,
+            Utf8 | LargeUtf8 | Utf8View,
             Binary
             | LargeBinary
             | Utf8
@@ -220,7 +228,6 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
             | Interval(_),
         ) => true,
         (Utf8 | LargeUtf8, Utf8View) => true,
-        (Utf8View, Utf8 | LargeUtf8) => true,
         (BinaryView, Binary | LargeBinary) => true,
         (Utf8 | LargeUtf8, _) => to_type.is_numeric() && to_type != &Float16,
         (_, Utf8 | LargeUtf8) => from_type.is_primitive(),
@@ -802,6 +809,9 @@ pub fn cast_with_options(
         (FixedSizeList(_, size), _) if *size == 1 => {
             cast_single_element_fixed_size_list_to_values(array, to_type, cast_options)
         }
+        (Map(_, ordered1), Map(_, ordered2)) if ordered1 == ordered2 => {
+            cast_map_values(array.as_map(), to_type, cast_options, ordered1.to_owned())
+        }
         (Decimal128(_, s1), Decimal128(p2, s2)) => {
             cast_decimal_to_decimal_same_type::<Decimal128Type>(
                 array.as_primitive(),
@@ -1219,7 +1229,7 @@ pub fn cast_with_options(
                 let binary = BinaryArray::from(array.as_string::<i32>().clone());
                 cast_byte_container::<BinaryType, LargeBinaryType>(&binary)
             }
-            Utf8View => cast_byte_to_view::<Utf8Type, StringViewType>(array),
+            Utf8View => Ok(Arc::new(StringViewArray::from(array.as_string::<i32>()))),
             LargeUtf8 => cast_byte_container::<Utf8Type, LargeUtf8Type>(array),
             Time32(TimeUnit::Second) => parse_string::<Time32SecondType, i32>(array, cast_options),
             Time32(TimeUnit::Millisecond) => {
@@ -1258,6 +1268,56 @@ pub fn cast_with_options(
                 "Casting from {from_type:?} to {to_type:?} not supported",
             ))),
         },
+        (Utf8View, _) => match to_type {
+            UInt8 => parse_string_view::<UInt8Type>(array, cast_options),
+            UInt16 => parse_string_view::<UInt16Type>(array, cast_options),
+            UInt32 => parse_string_view::<UInt32Type>(array, cast_options),
+            UInt64 => parse_string_view::<UInt64Type>(array, cast_options),
+            Int8 => parse_string_view::<Int8Type>(array, cast_options),
+            Int16 => parse_string_view::<Int16Type>(array, cast_options),
+            Int32 => parse_string_view::<Int32Type>(array, cast_options),
+            Int64 => parse_string_view::<Int64Type>(array, cast_options),
+            Float32 => parse_string_view::<Float32Type>(array, cast_options),
+            Float64 => parse_string_view::<Float64Type>(array, cast_options),
+            Date32 => parse_string_view::<Date32Type>(array, cast_options),
+            Date64 => parse_string_view::<Date64Type>(array, cast_options),
+            Binary => cast_view_to_byte::<StringViewType, GenericBinaryType<i32>>(array),
+            LargeBinary => cast_view_to_byte::<StringViewType, GenericBinaryType<i64>>(array),
+            Utf8 => cast_view_to_byte::<StringViewType, GenericStringType<i32>>(array),
+            LargeUtf8 => cast_view_to_byte::<StringViewType, GenericStringType<i64>>(array),
+            Time32(TimeUnit::Second) => parse_string_view::<Time32SecondType>(array, cast_options),
+            Time32(TimeUnit::Millisecond) => {
+                parse_string_view::<Time32MillisecondType>(array, cast_options)
+            }
+            Time64(TimeUnit::Microsecond) => {
+                parse_string_view::<Time64MicrosecondType>(array, cast_options)
+            }
+            Time64(TimeUnit::Nanosecond) => {
+                parse_string_view::<Time64NanosecondType>(array, cast_options)
+            }
+            Timestamp(TimeUnit::Second, to_tz) => {
+                cast_view_to_timestamp::<TimestampSecondType>(array, to_tz, cast_options)
+            }
+            Timestamp(TimeUnit::Millisecond, to_tz) => {
+                cast_view_to_timestamp::<TimestampMillisecondType>(array, to_tz, cast_options)
+            }
+            Timestamp(TimeUnit::Microsecond, to_tz) => {
+                cast_view_to_timestamp::<TimestampMicrosecondType>(array, to_tz, cast_options)
+            }
+            Timestamp(TimeUnit::Nanosecond, to_tz) => {
+                cast_view_to_timestamp::<TimestampNanosecondType>(array, to_tz, cast_options)
+            }
+            Interval(IntervalUnit::YearMonth) => {
+                cast_view_to_year_month_interval(array, cast_options)
+            }
+            Interval(IntervalUnit::DayTime) => cast_view_to_day_time_interval(array, cast_options),
+            Interval(IntervalUnit::MonthDayNano) => {
+                cast_view_to_month_day_nano_interval(array, cast_options)
+            }
+            _ => Err(ArrowError::CastError(format!(
+                "Casting from {from_type:?} to {to_type:?} not supported",
+            ))),
+        },
         (LargeUtf8, _) => match to_type {
             UInt8 => parse_string::<UInt8Type, i64>(array, cast_options),
             UInt16 => parse_string::<UInt16Type, i64>(array, cast_options),
@@ -1279,7 +1339,7 @@ pub fn cast_with_options(
             LargeBinary => Ok(Arc::new(LargeBinaryArray::from(
                 array.as_string::<i64>().clone(),
             ))),
-            Utf8View => cast_byte_to_view::<LargeUtf8Type, StringViewType>(array),
+            Utf8View => Ok(Arc::new(StringViewArray::from(array.as_string::<i64>()))),
             Time32(TimeUnit::Second) => parse_string::<Time32SecondType, i64>(array, cast_options),
             Time32(TimeUnit::Millisecond) => {
                 parse_string::<Time32MillisecondType, i64>(array, cast_options)
@@ -1327,7 +1387,7 @@ pub fn cast_with_options(
             FixedSizeBinary(size) => {
                 cast_binary_to_fixed_size_binary::<i32>(array, *size, cast_options)
             }
-            BinaryView => cast_byte_to_view::<BinaryType, BinaryViewType>(array),
+            BinaryView => Ok(Arc::new(BinaryViewArray::from(array.as_binary::<i32>()))),
             _ => Err(ArrowError::CastError(format!(
                 "Casting from {from_type:?} to {to_type:?} not supported",
             ))),
@@ -1342,7 +1402,7 @@ pub fn cast_with_options(
             FixedSizeBinary(size) => {
                 cast_binary_to_fixed_size_binary::<i64>(array, *size, cast_options)
             }
-            BinaryView => cast_byte_to_view::<LargeBinaryType, BinaryViewType>(array),
+            BinaryView => Ok(Arc::new(BinaryViewArray::from(array.as_binary::<i64>()))),
             _ => Err(ArrowError::CastError(format!(
                 "Casting from {from_type:?} to {to_type:?} not supported",
             ))),
@@ -1354,8 +1414,6 @@ pub fn cast_with_options(
                 "Casting from {from_type:?} to {to_type:?} not supported",
             ))),
         },
-        (Utf8View, Utf8) => cast_view_to_byte::<StringViewType, GenericStringType<i32>>(array),
-        (Utf8View, LargeUtf8) => cast_view_to_byte::<StringViewType, GenericStringType<i64>>(array),
         (BinaryView, Binary) => cast_view_to_byte::<BinaryViewType, GenericBinaryType<i32>>(array),
         (BinaryView, LargeBinary) => {
             cast_view_to_byte::<BinaryViewType, GenericBinaryType<i64>>(array)
@@ -1660,7 +1718,7 @@ pub fn cast_with_options(
             let array = cast_with_options(array, &Int64, cast_options)?;
             Ok(make_timestamp_array(
                 array.as_primitive(),
-                unit.clone(),
+                *unit,
                 tz.clone(),
             ))
         }
@@ -1721,11 +1779,7 @@ pub fn cast_with_options(
                 }
                 _ => converted,
             };
-            Ok(make_timestamp_array(
-                &adjusted,
-                to_unit.clone(),
-                to_tz.clone(),
-            ))
+            Ok(make_timestamp_array(&adjusted, *to_unit, to_tz.clone()))
         }
         (Timestamp(TimeUnit::Microsecond, _), Date32) => {
             timestamp_to_date32(array.as_primitive::<TimestampMicrosecondType>())
@@ -2336,56 +2390,6 @@ where
     let array_data = unsafe { builder.build_unchecked() };
 
     Ok(Arc::new(GenericByteArray::<TO>::from(array_data)))
-}
-
-/// Helper function to cast from one `ByteArrayType` array to `ByteViewType` array.
-fn cast_byte_to_view<FROM, V>(array: &dyn Array) -> Result<ArrayRef, ArrowError>
-where
-    FROM: ByteArrayType,
-    FROM::Offset: OffsetSizeTrait + ToPrimitive,
-    V: ByteViewType,
-{
-    let data = array.to_data();
-    assert_eq!(data.data_type(), &FROM::DATA_TYPE);
-
-    let len = array.len();
-    let str_values_buf = data.buffers()[1].clone();
-    let offsets = data.buffers()[0].typed_data::<FROM::Offset>();
-
-    let mut views_builder = BufferBuilder::<u128>::new(len);
-    for w in offsets.windows(2) {
-        let offset = w[0].to_u32().unwrap();
-        let end = w[1].to_u32().unwrap();
-        let value_buf = &str_values_buf[offset as usize..end as usize];
-        let length = end - offset;
-
-        if length <= 12 {
-            let mut view_buffer = [0; 16];
-            view_buffer[0..4].copy_from_slice(&length.to_le_bytes());
-            view_buffer[4..4 + value_buf.len()].copy_from_slice(value_buf);
-            views_builder.append(u128::from_le_bytes(view_buffer));
-        } else {
-            let view = ByteView {
-                length,
-                prefix: u32::from_le_bytes(value_buf[0..4].try_into().unwrap()),
-                buffer_index: 0,
-                offset,
-            };
-            views_builder.append(view.into());
-        }
-    }
-
-    assert_eq!(views_builder.len(), len);
-
-    // Safety: the input was a valid array so it valid UTF8 (if string). And
-    // all offsets were valid and we created the views correctly
-    Ok(Arc::new(unsafe {
-        GenericByteViewArray::<V>::new_unchecked(
-            ScalarBuffer::new(views_builder.finish(), 0, len),
-            vec![str_values_buf],
-            data.nulls().cloned(),
-        )
-    }))
 }
 
 /// Helper function to cast from one `ByteViewType` array to `ByteArrayType` array.
@@ -4003,6 +4007,11 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_timestamp() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("2020-09-08T12:00:00.123456789+00:00"),
+            Some("Not a valid date"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("2020-09-08T12:00:00.123456789+00:00"),
             Some("Not a valid date"),
@@ -4013,14 +4022,14 @@ mod tests {
             Some("Not a valid date"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             for time_unit in &[
                 TimeUnit::Second,
                 TimeUnit::Millisecond,
                 TimeUnit::Microsecond,
                 TimeUnit::Nanosecond,
             ] {
-                let to_type = DataType::Timestamp(time_unit.clone(), None);
+                let to_type = DataType::Timestamp(*time_unit, None);
                 let b = cast(array, &to_type).unwrap();
 
                 match time_unit {
@@ -4082,6 +4091,11 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_date32() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("2018-12-25"),
+            Some("Not a valid date"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("2018-12-25"),
             Some("Not a valid date"),
@@ -4092,7 +4106,7 @@ mod tests {
             Some("Not a valid date"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Date32;
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Date32Type>();
@@ -4114,30 +4128,47 @@ mod tests {
 
     #[test]
     fn test_cast_string_format_yyyymmdd_to_date32() {
-        let a = Arc::new(StringArray::from(vec![
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("2020-12-25"),
+            Some("20201117"),
+        ])) as ArrayRef;
+        let a1 = Arc::new(StringArray::from(vec![
+            Some("2020-12-25"),
+            Some("20201117"),
+        ])) as ArrayRef;
+        let a2 = Arc::new(LargeStringArray::from(vec![
             Some("2020-12-25"),
             Some("20201117"),
         ])) as ArrayRef;
 
-        let to_type = DataType::Date32;
-        let options = CastOptions {
-            safe: false,
-            format_options: FormatOptions::default(),
-        };
-        let result = cast_with_options(&a, &to_type, &options).unwrap();
-        let c = result.as_primitive::<Date32Type>();
-        assert_eq!(
-            chrono::NaiveDate::from_ymd_opt(2020, 12, 25),
-            c.value_as_date(0)
-        );
-        assert_eq!(
-            chrono::NaiveDate::from_ymd_opt(2020, 11, 17),
-            c.value_as_date(1)
-        );
+        for array in &[a0, a1, a2] {
+            let to_type = DataType::Date32;
+            let options = CastOptions {
+                safe: false,
+                format_options: FormatOptions::default(),
+            };
+            let result = cast_with_options(&array, &to_type, &options).unwrap();
+            let c = result.as_primitive::<Date32Type>();
+            assert_eq!(
+                chrono::NaiveDate::from_ymd_opt(2020, 12, 25),
+                c.value_as_date(0)
+            );
+            assert_eq!(
+                chrono::NaiveDate::from_ymd_opt(2020, 11, 17),
+                c.value_as_date(1)
+            );
+        }
     }
 
     #[test]
     fn test_cast_string_to_time32second() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("08:08:35.091323414"),
+            Some("08:08:60.091323414"), // leap second
+            Some("08:08:61.091323414"), // not valid
+            Some("Not a valid time"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("08:08:35.091323414"),
             Some("08:08:60.091323414"), // leap second
@@ -4152,7 +4183,7 @@ mod tests {
             Some("Not a valid time"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Time32(TimeUnit::Second);
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Time32SecondType>();
@@ -4173,6 +4204,13 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_time32millisecond() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("08:08:35.091323414"),
+            Some("08:08:60.091323414"), // leap second
+            Some("08:08:61.091323414"), // not valid
+            Some("Not a valid time"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("08:08:35.091323414"),
             Some("08:08:60.091323414"), // leap second
@@ -4187,7 +4225,7 @@ mod tests {
             Some("Not a valid time"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Time32(TimeUnit::Millisecond);
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Time32MillisecondType>();
@@ -4208,6 +4246,11 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_time64microsecond() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("08:08:35.091323414"),
+            Some("Not a valid time"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("08:08:35.091323414"),
             Some("Not a valid time"),
@@ -4218,7 +4261,7 @@ mod tests {
             Some("Not a valid time"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Time64(TimeUnit::Microsecond);
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Time64MicrosecondType>();
@@ -4237,6 +4280,11 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_time64nanosecond() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("08:08:35.091323414"),
+            Some("Not a valid time"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("08:08:35.091323414"),
             Some("Not a valid time"),
@@ -4247,7 +4295,7 @@ mod tests {
             Some("Not a valid time"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Time64(TimeUnit::Nanosecond);
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Time64NanosecondType>();
@@ -4266,6 +4314,11 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_date64() {
+        let a0 = Arc::new(StringViewArray::from(vec![
+            Some("2020-09-08T12:00:00"),
+            Some("Not a valid date"),
+            None,
+        ])) as ArrayRef;
         let a1 = Arc::new(StringArray::from(vec![
             Some("2020-09-08T12:00:00"),
             Some("Not a valid date"),
@@ -4276,7 +4329,7 @@ mod tests {
             Some("Not a valid date"),
             None,
         ])) as ArrayRef;
-        for array in &[a1, a2] {
+        for array in &[a0, a1, a2] {
             let to_type = DataType::Date64;
             let b = cast(array, &to_type).unwrap();
             let c = b.as_primitive::<Date64Type>();
@@ -4446,17 +4499,17 @@ mod tests {
         test_unsafe_string_to_interval_err!(
             vec![Some("foobar")],
             IntervalUnit::YearMonth,
-            r#"Not yet implemented: Unsupported Interval Expression with value "foobar""#
+            r#"Parser error: Invalid input syntax for type interval: "foobar""#
         );
         test_unsafe_string_to_interval_err!(
             vec![Some("foobar")],
             IntervalUnit::DayTime,
-            r#"Not yet implemented: Unsupported Interval Expression with value "foobar""#
+            r#"Parser error: Invalid input syntax for type interval: "foobar""#
         );
         test_unsafe_string_to_interval_err!(
             vec![Some("foobar")],
             IntervalUnit::MonthDayNano,
-            r#"Not yet implemented: Unsupported Interval Expression with value "foobar""#
+            r#"Parser error: Invalid input syntax for type interval: "foobar""#
         );
         test_unsafe_string_to_interval_err!(
             vec![Some("2 months 31 days 1 second")],
@@ -5207,19 +5260,19 @@ mod tests {
         _test_string_to_view::<i64>();
     }
 
+    const VIEW_TEST_DATA: [Option<&str>; 5] = [
+        Some("hello"),
+        Some("repeated"),
+        None,
+        Some("large payload over 12 bytes"),
+        Some("repeated"),
+    ];
+
     fn _test_string_to_view<O>()
     where
         O: OffsetSizeTrait,
     {
-        let data = vec![
-            Some("hello"),
-            Some("world"),
-            None,
-            Some("large payload over 12 bytes"),
-            Some("lulu"),
-        ];
-
-        let string_array = GenericStringArray::<O>::from(data.clone());
+        let string_array = GenericStringArray::<O>::from_iter(VIEW_TEST_DATA);
 
         assert!(can_cast_types(
             string_array.data_type(),
@@ -5229,7 +5282,7 @@ mod tests {
         let string_view_array = cast(&string_array, &DataType::Utf8View).unwrap();
         assert_eq!(string_view_array.data_type(), &DataType::Utf8View);
 
-        let expect_string_view_array = StringViewArray::from(data);
+        let expect_string_view_array = StringViewArray::from_iter(VIEW_TEST_DATA);
         assert_eq!(string_view_array.as_ref(), &expect_string_view_array);
     }
 
@@ -5243,15 +5296,7 @@ mod tests {
     where
         O: OffsetSizeTrait,
     {
-        let data: Vec<Option<&[u8]>> = vec![
-            Some(b"hello"),
-            Some(b"world"),
-            None,
-            Some(b"large payload over 12 bytes"),
-            Some(b"lulu"),
-        ];
-
-        let binary_array = GenericBinaryArray::<O>::from(data.clone());
+        let binary_array = GenericBinaryArray::<O>::from_iter(VIEW_TEST_DATA);
 
         assert!(can_cast_types(
             binary_array.data_type(),
@@ -5261,8 +5306,66 @@ mod tests {
         let binary_view_array = cast(&binary_array, &DataType::BinaryView).unwrap();
         assert_eq!(binary_view_array.data_type(), &DataType::BinaryView);
 
-        let expect_binary_view_array = BinaryViewArray::from(data);
+        let expect_binary_view_array = BinaryViewArray::from_iter(VIEW_TEST_DATA);
         assert_eq!(binary_view_array.as_ref(), &expect_binary_view_array);
+    }
+
+    #[test]
+    fn test_dict_to_view() {
+        let values = StringArray::from_iter(VIEW_TEST_DATA);
+        let keys = Int8Array::from_iter([Some(1), Some(0), None, Some(3), None, Some(1), Some(4)]);
+        let string_dict_array =
+            DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap();
+        let typed_dict = string_dict_array.downcast_dict::<StringArray>().unwrap();
+
+        let string_view_array = {
+            let mut builder = StringViewBuilder::new().with_block_size(8); // multiple buffers.
+            for v in typed_dict.into_iter() {
+                builder.append_option(v);
+            }
+            builder.finish()
+        };
+        let expected_string_array_type = string_view_array.data_type();
+        let casted_string_array = cast(&string_dict_array, expected_string_array_type).unwrap();
+        assert_eq!(casted_string_array.data_type(), expected_string_array_type);
+        assert_eq!(casted_string_array.as_ref(), &string_view_array);
+
+        let binary_buffer = cast(&typed_dict.values(), &DataType::Binary).unwrap();
+        let binary_dict_array =
+            DictionaryArray::<Int8Type>::new(typed_dict.keys().clone(), binary_buffer);
+        let typed_binary_dict = binary_dict_array.downcast_dict::<BinaryArray>().unwrap();
+
+        let binary_view_array = {
+            let mut builder = BinaryViewBuilder::new().with_block_size(8); // multiple buffers.
+            for v in typed_binary_dict.into_iter() {
+                builder.append_option(v);
+            }
+            builder.finish()
+        };
+        let expected_binary_array_type = binary_view_array.data_type();
+        let casted_binary_array = cast(&binary_dict_array, expected_binary_array_type).unwrap();
+        assert_eq!(casted_binary_array.data_type(), expected_binary_array_type);
+        assert_eq!(casted_binary_array.as_ref(), &binary_view_array);
+    }
+
+    #[test]
+    fn test_view_to_dict() {
+        let string_view_array = StringViewArray::from_iter(VIEW_TEST_DATA);
+        let string_dict_array: DictionaryArray<Int8Type> = VIEW_TEST_DATA.into_iter().collect();
+        let casted_type = string_dict_array.data_type();
+        let casted_dict_array = cast(&string_view_array, casted_type).unwrap();
+        assert_eq!(casted_dict_array.data_type(), casted_type);
+        assert_eq!(casted_dict_array.as_ref(), &string_dict_array);
+
+        let binary_view_array = BinaryViewArray::from_iter(VIEW_TEST_DATA);
+        let binary_dict_array = string_dict_array.downcast_dict::<StringArray>().unwrap();
+        let binary_buffer = cast(&binary_dict_array.values(), &DataType::Binary).unwrap();
+        let binary_dict_array =
+            DictionaryArray::<Int8Type>::new(binary_dict_array.keys().clone(), binary_buffer);
+        let casted_type = binary_dict_array.data_type();
+        let casted_binary_array = cast(&binary_view_array, casted_type).unwrap();
+        assert_eq!(casted_binary_array.data_type(), casted_type);
+        assert_eq!(casted_binary_array.as_ref(), &binary_dict_array);
     }
 
     #[test]
@@ -5275,24 +5378,15 @@ mod tests {
     where
         O: OffsetSizeTrait,
     {
-        let data: Vec<Option<&str>> = vec![
-            Some("hello"),
-            Some("world"),
-            None,
-            Some("large payload over 12 bytes"),
-            Some("lulu"),
-        ];
-
         let view_array = {
-            // ["hello", "world", null, "large payload over 12 bytes", "lulu"]
             let mut builder = StringViewBuilder::new().with_block_size(8); // multiple buffers.
-            for s in data.iter() {
+            for s in VIEW_TEST_DATA.iter() {
                 builder.append_option(*s);
             }
             builder.finish()
         };
 
-        let expected_string_array = GenericStringArray::<O>::from(data);
+        let expected_string_array = GenericStringArray::<O>::from_iter(VIEW_TEST_DATA);
         let expected_type = expected_string_array.data_type();
 
         assert!(can_cast_types(view_array.data_type(), expected_type));
@@ -5313,24 +5407,15 @@ mod tests {
     where
         O: OffsetSizeTrait,
     {
-        let data: Vec<Option<&[u8]>> = vec![
-            Some(b"hello"),
-            Some(b"world"),
-            None,
-            Some(b"large payload over 12 bytes"),
-            Some(b"lulu"),
-        ];
-
         let view_array = {
-            // ["hello", "world", null, "large payload over 12 bytes", "lulu"]
             let mut builder = BinaryViewBuilder::new().with_block_size(8); // multiple buffers.
-            for s in data.iter() {
+            for s in VIEW_TEST_DATA.iter() {
                 builder.append_option(*s);
             }
             builder.finish()
         };
 
-        let expected_binary_array = GenericBinaryArray::<O>::from(data);
+        let expected_binary_array = GenericBinaryArray::<O>::from_iter(VIEW_TEST_DATA);
         let expected_type = expected_binary_array.data_type();
 
         assert!(can_cast_types(view_array.data_type(), expected_type));
@@ -7349,6 +7434,240 @@ mod tests {
             .build()
             .unwrap();
         FixedSizeListArray::from(list_data)
+    }
+
+    #[test]
+    fn test_cast_map_dont_allow_change_of_order() {
+        let string_builder = StringBuilder::new();
+        let value_builder = StringBuilder::new();
+        let mut builder = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".to_string(),
+                key: "key".to_string(),
+                value: "value".to_string(),
+            }),
+            string_builder,
+            value_builder,
+        );
+
+        builder.keys().append_value("0");
+        builder.values().append_value("test_val_1");
+        builder.append(true).unwrap();
+        builder.keys().append_value("1");
+        builder.values().append_value("test_val_2");
+        builder.append(true).unwrap();
+
+        // map builder returns unsorted map by default
+        let array = builder.finish();
+
+        let new_ordered = true;
+        let new_type = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::Utf8, false),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            new_ordered,
+        );
+
+        let new_array_result = cast(&array, &new_type.clone());
+        assert!(!can_cast_types(array.data_type(), &new_type));
+        assert!(
+            matches!(new_array_result, Err(ArrowError::CastError(t)) if t == r#"Casting from Map(Field { name: "entries", data_type: Struct([Field { name: "key", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, Field { name: "value", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false) to Map(Field { name: "entries", data_type: Struct([Field { name: "key", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, Field { name: "value", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, true) not supported"#)
+        );
+    }
+
+    #[test]
+    fn test_cast_map_dont_allow_when_container_cant_cast() {
+        let string_builder = StringBuilder::new();
+        let value_builder = IntervalDayTimeArray::builder(2);
+        let mut builder = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".to_string(),
+                key: "key".to_string(),
+                value: "value".to_string(),
+            }),
+            string_builder,
+            value_builder,
+        );
+
+        builder.keys().append_value("0");
+        builder.values().append_value(IntervalDayTime::new(1, 1));
+        builder.append(true).unwrap();
+        builder.keys().append_value("1");
+        builder.values().append_value(IntervalDayTime::new(2, 2));
+        builder.append(true).unwrap();
+
+        // map builder returns unsorted map by default
+        let array = builder.finish();
+
+        let new_ordered = true;
+        let new_type = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::Duration(TimeUnit::Second), false),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            new_ordered,
+        );
+
+        let new_array_result = cast(&array, &new_type.clone());
+        assert!(!can_cast_types(array.data_type(), &new_type));
+        assert!(
+            matches!(new_array_result, Err(ArrowError::CastError(t)) if t == r#"Casting from Map(Field { name: "entries", data_type: Struct([Field { name: "key", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, Field { name: "value", data_type: Interval(DayTime), nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, false) to Map(Field { name: "entries", data_type: Struct([Field { name: "key", data_type: Utf8, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, Field { name: "value", data_type: Duration(Second), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }]), nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }, true) not supported"#)
+        );
+    }
+
+    #[test]
+    fn test_cast_map_field_names() {
+        let string_builder = StringBuilder::new();
+        let value_builder = StringBuilder::new();
+        let mut builder = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".to_string(),
+                key: "key".to_string(),
+                value: "value".to_string(),
+            }),
+            string_builder,
+            value_builder,
+        );
+
+        builder.keys().append_value("0");
+        builder.values().append_value("test_val_1");
+        builder.append(true).unwrap();
+        builder.keys().append_value("1");
+        builder.values().append_value("test_val_2");
+        builder.append(true).unwrap();
+        builder.append(false).unwrap();
+
+        let array = builder.finish();
+
+        let new_type = DataType::Map(
+            Arc::new(Field::new(
+                "entries_new",
+                DataType::Struct(
+                    vec![
+                        Field::new("key_new", DataType::Utf8, false),
+                        Field::new("value_values", DataType::Utf8, false),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        );
+
+        assert_ne!(new_type, array.data_type().clone());
+
+        let new_array = cast(&array, &new_type.clone()).unwrap();
+        assert_eq!(new_type, new_array.data_type().clone());
+        let map_array = new_array.as_map();
+
+        assert_ne!(new_type, array.data_type().clone());
+        assert_eq!(new_type, map_array.data_type().clone());
+
+        let key_string = map_array
+            .keys()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(&key_string, &vec!["0", "1"]);
+
+        let values_string_array = cast(map_array.values(), &DataType::Utf8).unwrap();
+        let values_string = values_string_array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(&values_string, &vec!["test_val_1", "test_val_2"]);
+
+        assert_eq!(
+            map_array.nulls(),
+            Some(&NullBuffer::from(vec![true, true, false]))
+        );
+    }
+
+    #[test]
+    fn test_cast_map_contained_values() {
+        let string_builder = StringBuilder::new();
+        let value_builder = Int8Builder::new();
+        let mut builder = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".to_string(),
+                key: "key".to_string(),
+                value: "value".to_string(),
+            }),
+            string_builder,
+            value_builder,
+        );
+
+        builder.keys().append_value("0");
+        builder.values().append_value(44);
+        builder.append(true).unwrap();
+        builder.keys().append_value("1");
+        builder.values().append_value(22);
+        builder.append(true).unwrap();
+
+        let array = builder.finish();
+
+        let new_type = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::Utf8, false),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        );
+
+        let new_array = cast(&array, &new_type.clone()).unwrap();
+        assert_eq!(new_type, new_array.data_type().clone());
+        let map_array = new_array.as_map();
+
+        assert_ne!(new_type, array.data_type().clone());
+        assert_eq!(new_type, map_array.data_type().clone());
+
+        let key_string = map_array
+            .keys()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(&key_string, &vec!["0", "1"]);
+
+        let values_string_array = cast(map_array.values(), &DataType::Utf8).unwrap();
+        let values_string = values_string_array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(&values_string, &vec!["44", "22"]);
     }
 
     #[test]
