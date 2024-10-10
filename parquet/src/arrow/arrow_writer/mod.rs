@@ -162,7 +162,7 @@ impl<W: Write + Send> ArrowWriter<W> {
         options: ArrowWriterOptions,
     ) -> Result<Self> {
         let schema = match options.schema_root {
-            Some(s) => arrow_to_parquet_schema_with_root(&arrow_schema, &s)?,
+            Some(s) => arrow_to_parquet_schema_with_root(&arrow_schema, &s, false)?,
             None => arrow_to_parquet_schema(&arrow_schema)?,
         };
         let mut props = options.properties;
