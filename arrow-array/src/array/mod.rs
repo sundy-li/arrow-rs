@@ -72,6 +72,10 @@ mod byte_view_array;
 
 pub use byte_view_array::*;
 
+mod list_view_array;
+
+pub use list_view_array::*;
+
 /// An array in the [arrow columnar format](https://arrow.apache.org/docs/format/Columnar.html)
 pub trait Array: std::fmt::Debug + Send + Sync {
     /// Returns the array as [`Any`] so that it can be
@@ -185,7 +189,7 @@ pub trait Array: std::fmt::Debug + Send + Sync {
     ///
     /// The physical representation is efficient, but is sometimes non intuitive
     /// for certain array types such as those with nullable child arrays like
-    /// [`DictionaryArray::values`] or [`RunArray::values`], or without a
+    /// [`DictionaryArray::values`], [`RunArray::values`] or [`UnionArray`], or without a
     /// null buffer, such as [`NullArray`].
     ///
     /// To determine if each element of such an array is "logically" null,
@@ -205,6 +209,7 @@ pub trait Array: std::fmt::Debug + Send + Sync {
     /// * [`DictionaryArray`] where [`DictionaryArray::values`] contains nulls
     /// * [`RunArray`] where [`RunArray::values`] contains nulls
     /// * [`NullArray`] where all indices are nulls
+    /// * [`UnionArray`] where the selected values contains nulls
     ///
     /// In these cases a logical [`NullBuffer`] will be computed, encoding the
     /// logical nullability of these arrays, beyond what is encoded in
@@ -217,7 +222,7 @@ pub trait Array: std::fmt::Debug + Send + Sync {
     ///
     /// Note: For performance reasons, this method returns nullability solely as determined by the
     /// null buffer. This difference can lead to surprising results, for example, [`NullArray::is_null`] always
-    /// returns `false` as the array lacks a null buffer. Similarly [`DictionaryArray`] and [`RunArray`] may
+    /// returns `false` as the array lacks a null buffer. Similarly [`DictionaryArray`], [`RunArray`] and [`UnionArray`] may
     /// encode nullability in their children. See [`Self::logical_nulls`] for more information.
     ///
     /// # Example:
@@ -369,7 +374,7 @@ impl Array for ArrayRef {
     }
 }
 
-impl<'a, T: Array> Array for &'a T {
+impl<T: Array> Array for &T {
     fn as_any(&self) -> &dyn Any {
         T::as_any(self)
     }
@@ -590,6 +595,12 @@ impl<OffsetSize: OffsetSizeTrait> PartialEq for GenericListArray<OffsetSize> {
     }
 }
 
+impl<OffsetSize: OffsetSizeTrait> PartialEq for GenericListViewArray<OffsetSize> {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_data().eq(&other.to_data())
+    }
+}
+
 impl PartialEq for MapArray {
     fn eq(&self, other: &Self) -> bool {
         self.to_data().eq(&other.to_data())
@@ -678,6 +689,8 @@ pub fn make_array(data: ArrayData) -> ArrayRef {
         DataType::Utf8View => Arc::new(StringViewArray::from(data)) as ArrayRef,
         DataType::List(_) => Arc::new(ListArray::from(data)) as ArrayRef,
         DataType::LargeList(_) => Arc::new(LargeListArray::from(data)) as ArrayRef,
+        DataType::ListView(_) => Arc::new(ListViewArray::from(data)) as ArrayRef,
+        DataType::LargeListView(_) => Arc::new(LargeListViewArray::from(data)) as ArrayRef,
         DataType::Struct(_) => Arc::new(StructArray::from(data)) as ArrayRef,
         DataType::Map(_, _) => Arc::new(MapArray::from(data)) as ArrayRef,
         DataType::Union(_, _) => Arc::new(UnionArray::from(data)) as ArrayRef,

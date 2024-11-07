@@ -23,7 +23,8 @@
     clippy::explicit_iter_loop,
     clippy::future_not_send,
     clippy::use_self,
-    clippy::clone_on_ref_ptr
+    clippy::clone_on_ref_ptr,
+    unreachable_pub
 )]
 
 //! # object_store
@@ -715,7 +716,7 @@ pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
 
     /// List all the objects with the given prefix.
     ///
-    /// Prefixes are evaluated on a path segment basis, i.e. `foo/bar/` is a prefix of `foo/bar/x` but not of
+    /// Prefixes are evaluated on a path segment basis, i.e. `foo/bar` is a prefix of `foo/bar/x` but not of
     /// `foo/bar_baz/x`. List is recursive, i.e. `foo/bar/more/x` will be included.
     ///
     /// Note: the order of returned [`ObjectMeta`] is not guaranteed
@@ -742,7 +743,7 @@ pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
     /// delimiter. Returns common prefixes (directories) in addition to object
     /// metadata.
     ///
-    /// Prefixes are evaluated on a path segment basis, i.e. `foo/bar/` is a prefix of `foo/bar/x` but not of
+    /// Prefixes are evaluated on a path segment basis, i.e. `foo/bar` is a prefix of `foo/bar/x` but not of
     /// `foo/bar_baz/x`. List is not recursive, i.e. `foo/bar/more/x` will not be included.
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult>;
 
@@ -911,7 +912,7 @@ pub struct ObjectMeta {
 }
 
 /// Options for a get request, such as range
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GetOptions {
     /// Request will succeed if the `ObjectMeta::e_tag` matches
     /// otherwise returning [`Error::Precondition`]
@@ -1224,78 +1225,116 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A specialized `Error` for object store-related errors
 #[derive(Debug, Snafu)]
-#[allow(missing_docs)]
 #[non_exhaustive]
 pub enum Error {
+    /// A fallback error type when no variant matches
     #[snafu(display("Generic {} error: {}", store, source))]
     Generic {
+        /// The store this error originated from
         store: &'static str,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when the object is not found at given location
     #[snafu(display("Object at location {} not found: {}", path, source))]
     NotFound {
+        /// The path to file
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error for invalid path
     #[snafu(
         display("Encountered object with invalid path: {}", source),
         context(false)
     )]
-    InvalidPath { source: path::Error },
+    InvalidPath {
+        /// The wrapped error
+        source: path::Error,
+    },
 
+    /// Error when `tokio::spawn` failed
     #[snafu(display("Error joining spawned task: {}", source), context(false))]
-    JoinError { source: tokio::task::JoinError },
+    JoinError {
+        /// The wrapped error
+        source: tokio::task::JoinError,
+    },
 
+    /// Error when the attempted operation is not supported
     #[snafu(display("Operation not supported: {}", source))]
     NotSupported {
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when the object already exists
     #[snafu(display("Object at location {} already exists: {}", path, source))]
     AlreadyExists {
+        /// The path to the
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when the required conditions failed for the operation
     #[snafu(display("Request precondition failure for path {}: {}", path, source))]
     Precondition {
+        /// The path to the file
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when the object at the location isn't modified
     #[snafu(display("Object at location {} not modified: {}", path, source))]
     NotModified {
+        /// The path to the file
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when an operation is not implemented
     #[snafu(display("Operation not yet implemented."))]
     NotImplemented,
 
+    /// Error when the used credentials don't have enough permission
+    /// to perform the requested operation
     #[snafu(display(
         "The operation lacked the necessary privileges to complete for path {}: {}",
         path,
         source
     ))]
     PermissionDenied {
+        /// The path to the file
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when the used credentials lack valid authentication
     #[snafu(display(
         "The operation lacked valid authentication credentials for path {}: {}",
         path,
         source
     ))]
     Unauthenticated {
+        /// The path to the file
         path: String,
+        /// The wrapped error
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Error when a configuration key is invalid for the store used
     #[snafu(display("Configuration key: '{}' is not valid for store '{}'.", key, store))]
-    UnknownConfigurationKey { store: &'static str, key: String },
+    UnknownConfigurationKey {
+        /// The object store used
+        store: &'static str,
+        /// The configuration key used
+        key: String,
+    },
 }
 
 impl From<Error> for std::io::Error {
@@ -1335,7 +1374,7 @@ mod tests {
     }
 
     #[cfg(any(feature = "azure", feature = "aws"))]
-    pub async fn signing<T>(integration: &T)
+    pub(crate) async fn signing<T>(integration: &T)
     where
         T: ObjectStore + signer::Signer,
     {
@@ -1358,7 +1397,7 @@ mod tests {
     }
 
     #[cfg(any(feature = "aws", feature = "azure"))]
-    pub async fn tagging<F, Fut>(storage: Arc<dyn ObjectStore>, validate: bool, get_tags: F)
+    pub(crate) async fn tagging<F, Fut>(storage: Arc<dyn ObjectStore>, validate: bool, get_tags: F)
     where
         F: Fn(Path) -> Fut + Send + Sync,
         Fut: std::future::Future<Output = Result<reqwest::Response>> + Send,

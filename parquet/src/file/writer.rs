@@ -190,14 +190,25 @@ impl<W: Write + Send> SerializedFileWriter<W> {
     /// Creates new row group from this file writer.
     /// In case of IO error or Thrift error, returns `Err`.
     ///
-    /// There is no limit on a number of row groups in a file; however, row groups have
+    /// There can be at most 2^15 row groups in a file; and row groups have
     /// to be written sequentially. Every time the next row group is requested, the
     /// previous row group must be finalised and closed using `RowGroupWriter::close` method.
     pub fn next_row_group(&mut self) -> Result<SerializedRowGroupWriter<'_, W>> {
         self.assert_previous_writer_closed()?;
         let ordinal = self.row_group_index;
 
-        self.row_group_index += 1;
+        let ordinal: i16 = ordinal.try_into().map_err(|_| {
+            ParquetError::General(format!(
+                "Parquet does not support more than {} row groups per file (currently: {})",
+                i16::MAX,
+                ordinal
+            ))
+        })?;
+
+        self.row_group_index = self
+            .row_group_index
+            .checked_add(1)
+            .expect("SerializedFileWriter::row_group_index overflowed");
 
         let bloom_filter_position = self.properties().bloom_filter_position();
         let row_groups = &mut self.row_groups;
@@ -227,7 +238,7 @@ impl<W: Write + Send> SerializedFileWriter<W> {
             self.descr.clone(),
             self.props.clone(),
             &mut self.buf,
-            ordinal as i16,
+            ordinal,
             Some(Box::new(on_close)),
         );
         Ok(row_group_writer)
@@ -311,6 +322,7 @@ impl<W: Write + Send> SerializedFileWriter<W> {
         }
     }
 
+    /// Add a [`KeyValue`] to the file writer's metadata
     pub fn append_key_value_metadata(&mut self, kv_metadata: KeyValue) {
         self.kv_metadatas.push(kv_metadata);
     }
@@ -703,7 +715,7 @@ impl<'a, W: Write> SerializedPageWriter<'a, W> {
     }
 }
 
-impl<'a, W: Write + Send> PageWriter for SerializedPageWriter<'a, W> {
+impl<W: Write + Send> PageWriter for SerializedPageWriter<'_, W> {
     fn write_page(&mut self, page: CompressedPage) -> Result<PageWriteSpec> {
         let page_type = page.page_type();
         let start_pos = self.sink.bytes_written() as u64;

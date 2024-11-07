@@ -18,6 +18,7 @@
 //! Pass Arrow objects from and to PyArrow, using Arrow's
 //! [C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html)
 //! and [pyo3](https://docs.rs/pyo3/latest/pyo3/).
+//!
 //! For underlying implementation, see the [ffi] module.
 //!
 //! One can use these to write Python functions that take and return PyArrow
@@ -76,23 +77,30 @@ use crate::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use crate::record_batch::RecordBatch;
 
 import_exception!(pyarrow, ArrowException);
+/// Represents an exception raised by PyArrow.
 pub type PyArrowException = ArrowException;
 
 fn to_py_err(err: ArrowError) -> PyErr {
     PyArrowException::new_err(err.to_string())
 }
 
+/// Trait for converting Python objects to arrow-rs types.
 pub trait FromPyArrow: Sized {
+    /// Convert a Python object to an arrow-rs type.
+    ///
+    /// Takes a GIL-bound value from Python and returns a result with the arrow-rs type.
     fn from_pyarrow_bound(value: &Bound<PyAny>) -> PyResult<Self>;
 }
 
 /// Create a new PyArrow object from a arrow-rs type.
 pub trait ToPyArrow {
+    /// Convert the implemented type into a Python object without consuming it.
     fn to_pyarrow(&self, py: Python) -> PyResult<PyObject>;
 }
 
 /// Convert an arrow-rs type into a PyArrow object.
 pub trait IntoPyArrow {
+    /// Convert the implemented type into a Python object while consuming it.
     fn into_pyarrow(self, py: Python) -> PyResult<PyObject>;
 }
 
@@ -354,14 +362,20 @@ impl FromPyArrow for RecordBatch {
             validate_pycapsule(array_capsule, "arrow_array")?;
 
             let schema_ptr = unsafe { schema_capsule.reference::<FFI_ArrowSchema>() };
-            let ffi_array = unsafe { FFI_ArrowArray::from_raw(array_capsule.pointer() as _) };
-            let array_data = unsafe { ffi::from_ffi(ffi_array, schema_ptr) }.map_err(to_py_err)?;
+            let ffi_array = unsafe { FFI_ArrowArray::from_raw(array_capsule.pointer().cast()) };
+            let mut array_data =
+                unsafe { ffi::from_ffi(ffi_array, schema_ptr) }.map_err(to_py_err)?;
             if !matches!(array_data.data_type(), DataType::Struct(_)) {
                 return Err(PyTypeError::new_err(
                     "Expected Struct type from __arrow_c_array.",
                 ));
             }
             let options = RecordBatchOptions::default().with_row_count(Some(array_data.len()));
+            // Ensure data is aligned (by potentially copying the buffers).
+            // This is needed because some python code (for example the
+            // python flight client) produces unaligned buffers
+            // See https://github.com/apache/arrow/issues/43552 for details
+            array_data.align_buffers();
             let array = StructArray::from(array_data);
             // StructArray does not embed metadata from schema. We need to override
             // the output schema with the schema from the capsule.
@@ -472,8 +486,10 @@ impl IntoPyArrow for ArrowArrayStreamReader {
     }
 }
 
-/// A newtype wrapper. When wrapped around a type `T: FromPyArrow`, it
-/// implements `FromPyObject` for the PyArrow objects. When wrapped around a
+/// A newtype wrapper for types implementing [`FromPyArrow`] or [`IntoPyArrow`].
+///
+/// When wrapped around a type `T: FromPyArrow`, it
+/// implements [`FromPyObject`] for the PyArrow objects. When wrapped around a
 /// `T: IntoPyArrow`, it implements `IntoPy<PyObject>` for the wrapped type.
 #[derive(Debug)]
 pub struct PyArrowType<T>(pub T);

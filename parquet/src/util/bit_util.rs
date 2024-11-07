@@ -636,7 +636,7 @@ impl BitReader {
     /// `T` needs to be a little-endian native type. The value is assumed to be byte
     /// aligned so the bit reader will be advanced to the start of the next byte before
     /// reading the value.
-
+    ///
     /// Returns `Some` if there's enough bytes left to form a value of `T`.
     /// Otherwise `None`.
     pub fn get_aligned<T: FromBytes>(&mut self, num_bytes: usize) -> Option<T> {
@@ -1027,7 +1027,10 @@ mod tests {
             .collect();
 
         // Generic values used to check against actual values read from `get_batch`.
-        let expected_values: Vec<T> = values.iter().map(|v| T::try_from_le_slice(v.as_bytes()).unwrap()).collect();
+        let expected_values: Vec<T> = values
+            .iter()
+            .map(|v| T::try_from_le_slice(v.as_bytes()).unwrap())
+            .collect();
 
         (0..total).for_each(|i| writer.put_value(values[i], num_bits));
 

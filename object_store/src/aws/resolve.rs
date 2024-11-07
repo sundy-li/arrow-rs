@@ -21,7 +21,6 @@ use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 /// A specialized `Error` for object store-related errors
 #[derive(Debug, Snafu)]
-#[allow(missing_docs)]
 enum Error {
     #[snafu(display("Bucket '{}' not found", bucket))]
     BucketNotFound { bucket: String },
@@ -78,19 +77,6 @@ pub async fn resolve_bucket_region(bucket: &str, client_options: &ClientOptions)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_private_bucket() {
-        let bucket = "bloxbender";
-
-        let region = resolve_bucket_region(bucket, &ClientOptions::new())
-            .await
-            .unwrap();
-
-        let expected = "us-west-2".to_string();
-
-        assert_eq!(region, expected);
-    }
 
     #[tokio::test]
     async fn test_bucket_does_not_exist() {

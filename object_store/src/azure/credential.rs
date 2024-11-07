@@ -22,7 +22,7 @@ use crate::client::{CredentialProvider, TokenProvider};
 use crate::util::hmac_sha256;
 use crate::RetryConfig;
 use async_trait::async_trait;
-use base64::prelude::BASE64_STANDARD;
+use base64::prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::header::{
@@ -51,10 +51,15 @@ pub(crate) static BLOB_TYPE: HeaderName = HeaderName::from_static("x-ms-blob-typ
 pub(crate) static DELETE_SNAPSHOTS: HeaderName = HeaderName::from_static("x-ms-delete-snapshots");
 pub(crate) static COPY_SOURCE: HeaderName = HeaderName::from_static("x-ms-copy-source");
 static CONTENT_MD5: HeaderName = HeaderName::from_static("content-md5");
+static PARTNER_TOKEN: HeaderName = HeaderName::from_static("x-ms-partner-token");
+static CLUSTER_IDENTIFIER: HeaderName = HeaderName::from_static("x-ms-cluster-identifier");
+static WORKLOAD_RESOURCE: HeaderName = HeaderName::from_static("x-ms-workload-resource-moniker");
+static PROXY_HOST: HeaderName = HeaderName::from_static("x-ms-proxy-host");
 pub(crate) const RFC1123_FMT: &str = "%a, %d %h %Y %T GMT";
 const CONTENT_TYPE_JSON: &str = "application/json";
 const MSI_SECRET_ENV_KEY: &str = "IDENTITY_HEADER";
 const MSI_API_VERSION: &str = "2019-08-01";
+const TOKEN_MIN_TTL: u64 = 300;
 
 /// OIDC scope used when interacting with OAuth2 APIs
 ///
@@ -90,7 +95,7 @@ pub enum Error {
     SASforSASNotSupported,
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl From<Error> for crate::Error {
     fn from(value: Error) -> Self {
@@ -130,6 +135,18 @@ pub enum AzureCredential {
     BearerToken(String),
 }
 
+impl AzureCredential {
+    /// Determines if the credential requires the request be treated as sensitive
+    pub fn sensitive_request(&self) -> bool {
+        match self {
+            Self::AccessKey(_) => false,
+            Self::BearerToken(_) => false,
+            // SAS tokens are sent as query parameters in the url
+            Self::SASToken(_) => true,
+        }
+    }
+}
+
 /// A list of known Azure authority hosts
 pub mod authority_hosts {
     /// China-based Azure Authority Host
@@ -151,7 +168,7 @@ pub(crate) struct AzureSigner {
 }
 
 impl AzureSigner {
-    pub fn new(
+    pub(crate) fn new(
         signing_key: AzureAccessKey,
         account: String,
         start: DateTime<Utc>,
@@ -167,7 +184,7 @@ impl AzureSigner {
         }
     }
 
-    pub fn sign(&self, method: &Method, url: &mut Url) -> Result<()> {
+    pub(crate) fn sign(&self, method: &Method, url: &mut Url) -> Result<()> {
         let (str_to_sign, query_pairs) = match &self.delegation_key {
             Some(delegation_key) => string_to_sign_user_delegation_sas(
                 url,
@@ -567,7 +584,7 @@ struct OAuthTokenResponse {
 ///
 /// <https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow#first-case-access-token-request-with-a-shared-secret>
 #[derive(Debug)]
-pub struct ClientSecretOAuthProvider {
+pub(crate) struct ClientSecretOAuthProvider {
     token_url: String,
     client_id: String,
     client_secret: String,
@@ -575,7 +592,7 @@ pub struct ClientSecretOAuthProvider {
 
 impl ClientSecretOAuthProvider {
     /// Create a new [`ClientSecretOAuthProvider`] for an azure backed store
-    pub fn new(
+    pub(crate) fn new(
         client_id: String,
         client_secret: String,
         tenant_id: impl AsRef<str>,
@@ -659,7 +676,7 @@ struct ImdsTokenResponse {
 /// This authentication type works in Azure VMs, App Service and Azure Functions applications, as well as the Azure Cloud Shell
 /// <https://learn.microsoft.com/en-gb/azure/active-directory/managed-identities-azure-resources/how-to-use-vm-token#get-a-token-using-http>
 #[derive(Debug)]
-pub struct ImdsManagedIdentityProvider {
+pub(crate) struct ImdsManagedIdentityProvider {
     msi_endpoint: String,
     client_id: Option<String>,
     object_id: Option<String>,
@@ -668,7 +685,7 @@ pub struct ImdsManagedIdentityProvider {
 
 impl ImdsManagedIdentityProvider {
     /// Create a new [`ImdsManagedIdentityProvider`] for an azure backed store
-    pub fn new(
+    pub(crate) fn new(
         client_id: Option<String>,
         object_id: Option<String>,
         msi_res_id: Option<String>,
@@ -743,7 +760,7 @@ impl TokenProvider for ImdsManagedIdentityProvider {
 ///
 /// <https://learn.microsoft.com/en-us/azure/active-directory/develop/workload-identity-federation>
 #[derive(Debug)]
-pub struct WorkloadIdentityOAuthProvider {
+pub(crate) struct WorkloadIdentityOAuthProvider {
     token_url: String,
     client_id: String,
     federated_token_file: String,
@@ -751,7 +768,7 @@ pub struct WorkloadIdentityOAuthProvider {
 
 impl WorkloadIdentityOAuthProvider {
     /// Create a new [`WorkloadIdentityOAuthProvider`] for an azure backed store
-    pub fn new(
+    pub(crate) fn new(
         client_id: impl Into<String>,
         federated_token_file: impl Into<String>,
         tenant_id: impl AsRef<str>,
@@ -819,7 +836,7 @@ mod az_cli_date_format {
     use chrono::{DateTime, TimeZone};
     use serde::{self, Deserialize, Deserializer};
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<chrono::Local>, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<chrono::Local>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -846,12 +863,12 @@ struct AzureCliTokenResponse {
 }
 
 #[derive(Default, Debug)]
-pub struct AzureCliCredential {
+pub(crate) struct AzureCliCredential {
     cache: TokenCache<Arc<AzureCredential>>,
 }
 
 impl AzureCliCredential {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -919,6 +936,113 @@ impl AzureCliCredential {
                 }),
             },
         }
+    }
+}
+
+/// Encapsulates the logic to perform an OAuth token challenge for Fabric
+#[derive(Debug)]
+pub(crate) struct FabricTokenOAuthProvider {
+    fabric_token_service_url: String,
+    fabric_workload_host: String,
+    fabric_session_token: String,
+    fabric_cluster_identifier: String,
+    storage_access_token: Option<String>,
+    token_expiry: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Claims {
+    exp: u64,
+}
+
+impl FabricTokenOAuthProvider {
+    /// Create a new [`FabricTokenOAuthProvider`] for an azure backed store
+    pub(crate) fn new(
+        fabric_token_service_url: impl Into<String>,
+        fabric_workload_host: impl Into<String>,
+        fabric_session_token: impl Into<String>,
+        fabric_cluster_identifier: impl Into<String>,
+        storage_access_token: Option<String>,
+    ) -> Self {
+        let (storage_access_token, token_expiry) = match storage_access_token {
+            Some(token) => match Self::validate_and_get_expiry(&token) {
+                Some(expiry) if expiry > Self::get_current_timestamp() + TOKEN_MIN_TTL => {
+                    (Some(token), Some(expiry))
+                }
+                _ => (None, None),
+            },
+            None => (None, None),
+        };
+
+        Self {
+            fabric_token_service_url: fabric_token_service_url.into(),
+            fabric_workload_host: fabric_workload_host.into(),
+            fabric_session_token: fabric_session_token.into(),
+            fabric_cluster_identifier: fabric_cluster_identifier.into(),
+            storage_access_token,
+            token_expiry,
+        }
+    }
+
+    fn validate_and_get_expiry(token: &str) -> Option<u64> {
+        let payload = token.split('.').nth(1)?;
+        let decoded_bytes = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
+        let decoded_str = str::from_utf8(&decoded_bytes).ok()?;
+        let claims: Claims = serde_json::from_str(decoded_str).ok()?;
+        Some(claims.exp)
+    }
+
+    fn get_current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenProvider for FabricTokenOAuthProvider {
+    type Credential = AzureCredential;
+
+    /// Fetch a token
+    async fn fetch_token(
+        &self,
+        client: &Client,
+        retry: &RetryConfig,
+    ) -> crate::Result<TemporaryToken<Arc<AzureCredential>>> {
+        if let Some(storage_access_token) = &self.storage_access_token {
+            if let Some(expiry) = self.token_expiry {
+                let exp_in = expiry - Self::get_current_timestamp();
+                if exp_in > TOKEN_MIN_TTL {
+                    return Ok(TemporaryToken {
+                        token: Arc::new(AzureCredential::BearerToken(storage_access_token.clone())),
+                        expiry: Some(Instant::now() + Duration::from_secs(exp_in)),
+                    });
+                }
+            }
+        }
+
+        let query_items = vec![("resource", AZURE_STORAGE_RESOURCE)];
+        let access_token: String = client
+            .request(Method::GET, &self.fabric_token_service_url)
+            .header(&PARTNER_TOKEN, self.fabric_session_token.as_str())
+            .header(&CLUSTER_IDENTIFIER, self.fabric_cluster_identifier.as_str())
+            .header(&WORKLOAD_RESOURCE, self.fabric_cluster_identifier.as_str())
+            .header(&PROXY_HOST, self.fabric_workload_host.as_str())
+            .query(&query_items)
+            .retryable(retry)
+            .idempotent(true)
+            .send()
+            .await
+            .context(TokenRequestSnafu)?
+            .text()
+            .await
+            .context(TokenResponseBodySnafu)?;
+        let exp_in = Self::validate_and_get_expiry(&access_token)
+            .map_or(3600, |expiry| expiry - Self::get_current_timestamp());
+        Ok(TemporaryToken {
+            token: Arc::new(AzureCredential::BearerToken(access_token)),
+            expiry: Some(Instant::now() + Duration::from_secs(exp_in)),
+        })
     }
 }
 

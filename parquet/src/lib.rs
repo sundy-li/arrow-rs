@@ -82,6 +82,7 @@
 //! [Logical Types]: https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
 //! [object_store]: https://docs.rs/object_store/latest/object_store/
 
+#![warn(missing_docs)]
 /// Defines a an item with an experimental public API
 ///
 /// The module will not be documented, and will only be public if the
@@ -116,8 +117,8 @@ pub mod basic;
 ///
 /// [parquet.thrift]: https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift
 // see parquet/CONTRIBUTING.md for instructions on regenerating
-#[allow(clippy::derivable_impls, clippy::match_single_binding)]
-// Don't try and format auto generated code
+// Don't try clippy and format auto generated code
+#[allow(clippy::all, missing_docs)]
 #[rustfmt::skip]
 pub mod format;
 

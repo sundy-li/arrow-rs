@@ -304,18 +304,18 @@ impl TreeBuilder {
 
 /// Reader tree for record assembly
 pub enum Reader {
-    // Primitive reader with type information and triplet iterator
+    /// Primitive reader with type information and triplet iterator
     PrimitiveReader(TypePtr, Box<TripletIter>),
-    // Optional reader with definition level of a parent and a reader
+    /// Optional reader with definition level of a parent and a reader
     OptionReader(i16, Box<Reader>),
-    // Group (struct) reader with type information, definition level and list of child
-    // readers. When it represents message type, type information is None
+    /// Group (struct) reader with type information, definition level and list of child
+    /// readers. When it represents message type, type information is None
     GroupReader(Option<TypePtr>, i16, Vec<Reader>),
-    // Reader for repeated values, e.g. lists, contains type information, definition
-    // level, repetition level and a child reader
+    /// Reader for repeated values, e.g. lists, contains type information, definition
+    /// level, repetition level and a child reader
     RepeatedReader(TypePtr, i16, i16, Box<Reader>),
-    // Reader of key-value pairs, e.g. maps, contains type information, definition
-    // level, repetition level, child reader for keys and child reader for values
+    /// Reader of key-value pairs, e.g. maps, contains type information, definition
+    /// level, repetition level, child reader for keys and child reader for values
     KeyValueReader(TypePtr, i16, i16, Box<Reader>, Box<Reader>),
 }
 
@@ -592,7 +592,7 @@ enum Either<'a> {
     Right(Box<dyn FileReader>),
 }
 
-impl<'a> Either<'a> {
+impl Either<'_> {
     fn reader(&self) -> &dyn FileReader {
         match *self {
             Either::Left(r) => r,
@@ -732,7 +732,7 @@ impl<'a> RowIter<'a> {
     }
 }
 
-impl<'a> Iterator for RowIter<'a> {
+impl Iterator for RowIter<'_> {
     type Item = Result<Row>;
 
     fn next(&mut self) -> Option<Result<Row>> {

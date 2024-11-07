@@ -44,7 +44,6 @@ use crate::{
 
 /// A specialized `Error` for filesystem object store-related errors
 #[derive(Debug, Snafu)]
-#[allow(missing_docs)]
 pub(crate) enum Error {
     #[snafu(display("File size for {} did not fit in a usize: {}", path, source))]
     FileSizeOverflowedUsize {
@@ -776,7 +775,7 @@ struct UploadState {
 }
 
 impl LocalUpload {
-    pub fn new(src: PathBuf, dest: PathBuf, file: File) -> Self {
+    pub(crate) fn new(src: PathBuf, dest: PathBuf, file: File) -> Self {
         Self {
             state: Arc::new(UploadState {
                 dest,

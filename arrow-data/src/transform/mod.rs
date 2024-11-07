@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Low-level array data abstractions.
+//!
+//! Provides utilities for creating, manipulating, and converting Arrow arrays
+//! made of primitive types, strings, and nested types.
+
 use super::{data::new_buffers, ArrayData, ArrayDataBuilder, ByteView};
 use crate::bit_mask::set_bits;
 use arrow_buffer::buffer::{BooleanBuffer, NullBuffer};
@@ -59,7 +64,7 @@ struct _MutableArrayData<'a> {
     pub child_data: Vec<MutableArrayData<'a>>,
 }
 
-impl<'a> _MutableArrayData<'a> {
+impl _MutableArrayData<'_> {
     fn null_buffer(&mut self) -> &mut MutableBuffer {
         self.null_buffer
             .as_mut()
@@ -172,7 +177,7 @@ pub struct MutableArrayData<'a> {
     extend_nulls: ExtendNulls,
 }
 
-impl<'a> std::fmt::Debug for MutableArrayData<'a> {
+impl std::fmt::Debug for MutableArrayData<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // ignores the closures.
         f.debug_struct("MutableArrayData")

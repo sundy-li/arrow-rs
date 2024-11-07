@@ -27,7 +27,9 @@ use thrift::protocol::{
 ///
 /// Unlike [`thrift::protocol::TSerializable`] this uses generics instead of trait objects
 pub trait TSerializable: Sized {
+    /// Reads the struct from the input Thrift protocol
     fn read_from_in_protocol<T: TInputProtocol>(i_prot: &mut T) -> thrift::Result<Self>;
+    /// Writes the struct to the output Thrift protocol
     fn write_to_out_protocol<T: TOutputProtocol>(&self, o_prot: &mut T) -> thrift::Result<()>;
 }
 
@@ -94,7 +96,7 @@ impl<'a> TCompactSliceInputProtocol<'a> {
     }
 }
 
-impl<'a> TInputProtocol for TCompactSliceInputProtocol<'a> {
+impl TInputProtocol for TCompactSliceInputProtocol<'_> {
     fn read_message_begin(&mut self) -> thrift::Result<TMessageIdentifier> {
         unimplemented!()
     }

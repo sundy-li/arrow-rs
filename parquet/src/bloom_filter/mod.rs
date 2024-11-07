@@ -181,9 +181,10 @@ impl std::ops::IndexMut<usize> for Block {
     }
 }
 
-/// A split block Bloom filter. The creation of this structure is based on the
-/// [`crate::file::properties::BloomFilterProperties`] struct set via [`crate::file::properties::WriterProperties`] and
-/// is thus hidden by default.
+/// A split block Bloom filter.
+///
+/// The creation of this structure is based on the [`crate::file::properties::BloomFilterProperties`]
+/// struct set via [`crate::file::properties::WriterProperties`] and is thus hidden by default.
 #[derive(Debug, Clone)]
 pub struct Sbbf(Vec<Block>);
 
@@ -414,7 +415,7 @@ mod tests {
     fn test_mask_set_quick_check() {
         for i in 0..1_000_000 {
             let result = Block::mask(i);
-            assert!(result.0.iter().all(|&x| x.count_ones() == 1));
+            assert!(result.0.iter().all(|&x| x.is_power_of_two()));
         }
     }
 

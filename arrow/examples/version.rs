@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod auth_basic_proto;
-pub mod integration_test;
-pub mod middleware;
+//! Print the arrow version and exit
+
+use arrow::ARROW_VERSION;
+
+fn main() {
+    println!("arrow version: {ARROW_VERSION}");
+}

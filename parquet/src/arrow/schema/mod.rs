@@ -178,8 +178,11 @@ fn get_arrow_schema_from_metadata(encoded_meta: &str) -> Result<Schema> {
 /// Encodes the Arrow schema into the IPC format, and base64 encodes it
 fn encode_arrow_schema(schema: &Schema) -> String {
     let options = writer::IpcWriteOptions::default();
+    let mut dictionary_tracker =
+        writer::DictionaryTracker::new_with_preserve_dict_id(true, options.preserve_dict_id());
     let data_gen = writer::IpcDataGenerator::default();
-    let mut serialized_schema = data_gen.schema_to_bytes(schema, &options);
+    let mut serialized_schema =
+        data_gen.schema_to_bytes_with_dictionary_tracker(schema, &mut dictionary_tracker, &options);
 
     // manually prepending the length to the schema as arrow uses the legacy IPC format
     // TODO: change after addressing ARROW-9777
@@ -1483,11 +1486,25 @@ mod tests {
             ),
             Field::new("date", DataType::Date32, true),
             Field::new("time_milli", DataType::Time32(TimeUnit::Millisecond), true),
-            Field::new("time_milli_utc", DataType::Time32(TimeUnit::Millisecond), true)
-                .with_metadata(HashMap::from_iter(vec![("adjusted_to_utc".to_string(), "".to_string())])),
+            Field::new(
+                "time_milli_utc",
+                DataType::Time32(TimeUnit::Millisecond),
+                true,
+            )
+            .with_metadata(HashMap::from_iter(vec![(
+                "adjusted_to_utc".to_string(),
+                "".to_string(),
+            )])),
             Field::new("time_micro", DataType::Time64(TimeUnit::Microsecond), true),
-            Field::new("time_micro_utc", DataType::Time64(TimeUnit::Microsecond), true)
-                .with_metadata(HashMap::from_iter(vec![("adjusted_to_utc".to_string(), "".to_string())])),
+            Field::new(
+                "time_micro_utc",
+                DataType::Time64(TimeUnit::Microsecond),
+                true,
+            )
+            .with_metadata(HashMap::from_iter(vec![(
+                "adjusted_to_utc".to_string(),
+                "".to_string(),
+            )])),
             Field::new(
                 "ts_milli",
                 DataType::Timestamp(TimeUnit::Millisecond, None),

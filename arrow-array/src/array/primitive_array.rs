@@ -880,7 +880,6 @@ impl<T: ArrowPrimitiveType> PrimitiveArray<T> {
     /// let c = a.unary_mut(|x| x * 2 + 1).unwrap();
     /// assert_eq!(c, Int32Array::from(vec![Some(11), Some(15), None]));
     /// ```
-
     pub fn unary_mut<F>(self, op: F) -> Result<PrimitiveArray<T>, PrimitiveArray<T>>
     where
         F: Fn(T::Native) -> T::Native,
@@ -1174,7 +1173,7 @@ impl<T: ArrowPrimitiveType> Array for PrimitiveArray<T> {
     }
 }
 
-impl<'a, T: ArrowPrimitiveType> ArrayAccessor for &'a PrimitiveArray<T> {
+impl<T: ArrowPrimitiveType> ArrayAccessor for &PrimitiveArray<T> {
     type Item = T::Native;
 
     fn value(&self, index: usize) -> Self::Item {
@@ -1570,9 +1569,7 @@ impl<T: DecimalType + ArrowPrimitiveType> PrimitiveArray<T> {
     /// Validates the Decimal Array, if the value of slot is overflow for the specified precision, and
     /// will be casted to Null
     pub fn null_if_overflow_precision(&self, precision: u8) -> Self {
-        self.unary_opt::<_, T>(|v| {
-            (T::validate_decimal_precision(v, precision).is_ok()).then_some(v)
-        })
+        self.unary_opt::<_, T>(|v| T::is_valid_decimal_precision(v, precision).then_some(v))
     }
 
     /// Returns [`Self::value`] formatted as a string

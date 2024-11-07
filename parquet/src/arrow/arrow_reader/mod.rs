@@ -34,9 +34,7 @@ use crate::arrow::schema::{parquet_to_arrow_schema_and_fields, ParquetField};
 use crate::arrow::{parquet_to_arrow_field_levels, FieldLevels, ProjectionMask};
 use crate::column::page::{PageIterator, PageReader};
 use crate::errors::{ParquetError, Result};
-use crate::file::footer;
-use crate::file::metadata::ParquetMetaData;
-use crate::file::page_index::index_reader;
+use crate::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use crate::file::reader::{ChunkReader, SerializedPageReader};
 use crate::schema::types::SchemaDescriptor;
 
@@ -382,23 +380,9 @@ impl ArrowReaderMetadata {
     /// `Self::metadata` is missing the page index, this function will attempt
     /// to load the page index by making an object store request.
     pub fn load<T: ChunkReader>(reader: &T, options: ArrowReaderOptions) -> Result<Self> {
-        let mut metadata = footer::parse_metadata(reader)?;
-        if options.page_index {
-            let column_index = metadata
-                .row_groups()
-                .iter()
-                .map(|rg| index_reader::read_columns_indexes(reader, rg.columns()))
-                .collect::<Result<Vec<_>>>()?;
-            metadata.set_column_index(Some(column_index));
-
-            let offset_index = metadata
-                .row_groups()
-                .iter()
-                .map(|rg| index_reader::read_offset_indexes(reader, rg.columns()))
-                .collect::<Result<Vec<_>>>()?;
-
-            metadata.set_offset_index(Some(offset_index))
-        }
+        let metadata = ParquetMetaDataReader::new()
+            .with_page_indexes(options.page_index)
+            .parse_and_finish(reader)?;
         Self::try_new(Arc::new(metadata), options)
     }
 
@@ -3094,6 +3078,108 @@ mod tests {
     }
 
     #[test]
+    fn test_read_binary_as_utf8() {
+        let file = write_parquet_from_iter(vec![
+            (
+                "binary_to_utf8",
+                Arc::new(BinaryArray::from(vec![
+                    b"one".as_ref(),
+                    b"two".as_ref(),
+                    b"three".as_ref(),
+                ])) as ArrayRef,
+            ),
+            (
+                "large_binary_to_large_utf8",
+                Arc::new(LargeBinaryArray::from(vec![
+                    b"one".as_ref(),
+                    b"two".as_ref(),
+                    b"three".as_ref(),
+                ])) as ArrayRef,
+            ),
+            (
+                "binary_view_to_utf8_view",
+                Arc::new(BinaryViewArray::from(vec![
+                    b"one".as_ref(),
+                    b"two".as_ref(),
+                    b"three".as_ref(),
+                ])) as ArrayRef,
+            ),
+        ]);
+        let supplied_fields = Fields::from(vec![
+            Field::new("binary_to_utf8", ArrowDataType::Utf8, false),
+            Field::new(
+                "large_binary_to_large_utf8",
+                ArrowDataType::LargeUtf8,
+                false,
+            ),
+            Field::new("binary_view_to_utf8_view", ArrowDataType::Utf8View, false),
+        ]);
+
+        let options = ArrowReaderOptions::new().with_schema(Arc::new(Schema::new(supplied_fields)));
+        let mut arrow_reader = ParquetRecordBatchReaderBuilder::try_new_with_options(
+            file.try_clone().unwrap(),
+            options,
+        )
+        .expect("reader builder with schema")
+        .build()
+        .expect("reader with schema");
+
+        let batch = arrow_reader.next().unwrap().unwrap();
+        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.num_rows(), 3);
+        assert_eq!(
+            batch
+                .column(0)
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some("one"), Some("two"), Some("three")]
+        );
+
+        assert_eq!(
+            batch
+                .column(1)
+                .as_string::<i64>()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![Some("one"), Some("two"), Some("three")]
+        );
+
+        assert_eq!(
+            batch.column(2).as_string_view().iter().collect::<Vec<_>>(),
+            vec![Some("one"), Some("two"), Some("three")]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid UTF8 sequence at")]
+    fn test_read_non_utf8_binary_as_utf8() {
+        let file = write_parquet_from_iter(vec![(
+            "non_utf8_binary",
+            Arc::new(BinaryArray::from(vec![
+                b"\xDE\x00\xFF".as_ref(),
+                b"\xDE\x01\xAA".as_ref(),
+                b"\xDE\x02\xFF".as_ref(),
+            ])) as ArrayRef,
+        )]);
+        let supplied_fields = Fields::from(vec![Field::new(
+            "non_utf8_binary",
+            ArrowDataType::Utf8,
+            false,
+        )]);
+
+        let options = ArrowReaderOptions::new().with_schema(Arc::new(Schema::new(supplied_fields)));
+        let mut arrow_reader = ParquetRecordBatchReaderBuilder::try_new_with_options(
+            file.try_clone().unwrap(),
+            options,
+        )
+        .expect("reader builder with schema")
+        .build()
+        .expect("reader with schema");
+        arrow_reader.next().unwrap().unwrap_err();
+    }
+
+    #[test]
     fn test_with_schema() {
         let nested_fields = Fields::from(vec![
             Field::new("utf8_to_dict", ArrowDataType::Utf8, false),
@@ -3498,6 +3584,8 @@ mod tests {
             .unwrap();
             // Although `Vec<Vec<PageLoacation>>` of each row group is empty,
             // we should read the file successfully.
+            // FIXME: this test will fail when metadata parsing returns `None` for missing page
+            // indexes. https://github.com/apache/arrow-rs/issues/6447
             assert!(builder.metadata().offset_index().unwrap()[0].is_empty());
             let reader = builder.build().unwrap();
             let batches = reader.collect::<Result<Vec<_>, _>>().unwrap();
