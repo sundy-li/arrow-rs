@@ -49,3 +49,10 @@ lz4 = ["lz4_flex"]
 
 [dev-dependencies]
 tempfile = "3.3"
+criterion = { version = "0.5", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
+
+
+[[bench]]
+name = "ipc"
+harness = false
